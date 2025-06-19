@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Chat App</title>
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        margin: 0;
+        padding: 20px;
+        height: 100vh;
+        display: flex;
+      }
+      .container {
+        display: flex;
+        width: 100%;
+        max-width: 1200px;
+        margin: 0 auto;
+        gap: 20px;
+      }
+      .sidebar {
+        width: 250px;
+        border-right: 1px solid #ccc;
+        padding-right: 20px;
+      }
+      .chat-area {
+        flex-grow: 1;
+        display: flex;
+        flex-direction: column;
+      }
+      .messages {
+        flex-grow: 1;
+        border: 1px solid #ccc;
+        padding: 10px;
+        margin-bottom: 10px;
+        overflow-y: auto;
+        height: 400px;
+      }
+      .message {
+        margin-bottom: 10px;
+        padding: 8px;
+        background-color: #f0f0f0;
+        border-radius: 5px;
+      }
+      .input-area {
+        display: flex;
+        gap: 10px;
+        padding: 10px 0;
+      }
+      input[type="text"] {
+        flex-grow: 1;
+        padding: 8px;
+        border: 1px solid #ccc;
+        border-radius: 4px;
+      }
+      button {
+        padding: 8px 16px;
+        background-color: #007bff;
+        color: white;
+        border: none;
+        border-radius: 4px;
+        cursor: pointer;
+      }
+      button:hover {
+        background-color: #0056b3;
+      }
+      .section {
+        margin-bottom: 20px;
+      }
+      .section-title {
+        font-weight: bold;
+        margin-bottom: 10px;
+      }
+      .list-item {
+        padding: 8px;
+        margin-bottom: 5px;
+        cursor: pointer;
+        border-radius: 4px;
+      }
+      .list-item:hover {
+        background-color: #f0f0f0;
+      }
+      .active {
+        background-color: #e0e0e0;
+      }
+      .chat-header {
+        padding: 10px;
+        background-color: #f8f9fa;
+        border-bottom: 1px solid #dee2e6;
+        margin-bottom: 10px;
+      }
+      .user-list {
+        max-height: 200px;
+        overflow-y: auto;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <div class="sidebar">
+        <div class="section">
+          <input type="text" id="username" placeholder="Enter your username" />
+          <button onclick="setUsername()">Set Username</button>
+        </div>
+
+        <div class="section">
+          <div class="section-title">Rooms</div>
+          <div id="roomList"></div>
+          <div style="margin-top: 10px">
+            <input type="text" id="newRoomName" placeholder="New room name" />
+            <button onclick="createRoom()">Create Room</button>
+          </div>
+        </div>
+
+        <div class="section">
+          <div class="section-title">Direct Messages</div>
+          <div id="chatList"></div>
+          <div class="section-title">Available Users</div>
+          <div id="userList" class="user-list"></div>
+        </div>
+      </div>
+
+      <div class="chat-area">
+        <div class="chat-header" id="chatHeader">
+          Select a room or start a chat
+        </div>
+        <div class="messages" id="messages"></div>
+        <div class="input-area">
+          <input
+            type="text"
+            id="messageInput"
+            placeholder="Type a message..."
+          />
+          <button onclick="sendMessage()">Send</button>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      const socket = io("http://localhost:3000");
+      let currentUser = null;
+      let currentRoom = null;
+      let currentChat = null;
+      let activeType = null; // 'room' or 'chat'
+
+      function setUsername() {
+        const username = document.getElementById("username").value;
+        if (username) {
+          currentUser = username;
+          socket.emit("join", { username });
+          loadUsers();
+          loadRooms();
+          document.getElementById("username").disabled = true;
+        }
+      }
+
+      // Room functions
+      function loadRooms() {
+        fetch("http://localhost:3000/api/rooms")
+          .then((response) => response.json())
+          .then((rooms) => {
+            const roomList = document.getElementById("roomList");
+            roomList.innerHTML = rooms
+              .map(
+                (room) => `
+                        <div class="list-item ${
+                          currentRoom === room.id ? "active" : ""
+                        }" 
+                             onclick="joinRoom('${room.id}', '${room.name}')">
+                            ${room.name} (${room.userCount})
+                        </div>
+                    `
+              )
+              .join("");
+          });
+      }
+
+      function createRoom() {
+        const name = document.getElementById("newRoomName").value;
+        if (name) {
+          socket.emit("createRoom", { name });
+          document.getElementById("newRoomName").value = "";
+        }
+      }
+
+      function joinRoom(roomId, roomName) {
+        if (!currentUser) {
+          alert("Please set your username first!");
+          return;
+        }
+        currentRoom = roomId;
+        currentChat = null;
+        activeType = "room";
+        socket.emit("joinRoom", { roomId });
+
+        document.getElementById("chatHeader").textContent = `Room: ${roomName}`;
+
+        fetch(`http://localhost:3000/api/rooms/${roomId}/messages`)
+          .then((response) => response.json())
+          .then((messages) => {
+            displayMessages(messages);
+          });
+
+        updateActiveStates();
+      }
+
+      // Chat functions
+      function loadUsers() {
+        fetch("http://localhost:3000/api/users")
+          .then((response) => response.json())
+          .then((users) => {
+            const userList = document.getElementById("userList");
+            userList.innerHTML = users
+              .filter((user) => user.username !== currentUser)
+              .map(
+                (user) => `
+                            <div class="list-item" onclick="startChat('${user.id}', '${user.username}')">
+                                ${user.username}
+                            </div>
+                        `
+              )
+              .join("");
+          });
+      }
+
+      function startChat(userId, username) {
+        socket.emit("startChat", { userId });
+        loadChats();
+      }
+
+      function loadChats() {
+        if (!currentUser) return;
+
+        fetch(`http://localhost:3000/api/users/${currentUser}/chats`)
+          .then((response) => response.json())
+          .then((chats) => {
+            const chatList = document.getElementById("chatList");
+            chatList.innerHTML = chats
+              .map((chat) => {
+                const otherUser = chat.participants.find(
+                  (p) => p.username !== currentUser
+                );
+                return `
+                            <div class="list-item ${
+                              currentChat === chat.id ? "active" : ""
+                            }"
+                                 onclick="openChat('${chat.id}', '${
+                  otherUser.username
+                }')">
+                                ${otherUser.username}
+                                ${
+                                  chat.lastMessage
+                                    ? `<div><small>${chat.lastMessage.content}</small></div>`
+                                    : ""
+                                }
+                            </div>
+                        `;
+              })
+              .join("");
+          });
+      }
+
+      function openChat(chatId, username) {
+        currentChat = chatId;
+        currentRoom = null;
+        activeType = "chat";
+
+        document.getElementById(
+          "chatHeader"
+        ).textContent = `Chat with: ${username}`;
+
+        fetch(`http://localhost:3000/api/chats/${chatId}/messages`)
+          .then((response) => response.json())
+          .then((messages) => {
+            displayMessages(messages);
+          });
+
+        updateActiveStates();
+      }
+
+      function sendMessage() {
+        const content = document.getElementById("messageInput").value;
+        if (!content) return;
+
+        if (activeType === "room" && currentRoom) {
+          socket.emit("message", { content, roomId: currentRoom });
+        } else if (activeType === "chat" && currentChat) {
+          socket.emit("directMessage", { chatId: currentChat, content });
+        }
+
+        document.getElementById("messageInput").value = "";
+      }
+
+      function displayMessages(messages) {
+        const messagesDiv = document.getElementById("messages");
+        messagesDiv.innerHTML = messages
+          .map(
+            (msg) => `
+                <div class="message">
+                    <strong>${msg.username}</strong>: ${msg.content}
+                    <small>(${new Date(
+                      msg.timestamp
+                    ).toLocaleTimeString()})</small>
+                </div>
+            `
+          )
+          .join("");
+        messagesDiv.scrollTop = messagesDiv.scrollHeight;
+      }
+
+      function updateActiveStates() {
+        document.querySelectorAll(".list-item").forEach((item) => {
+          item.classList.remove("active");
+        });
+
+        if (activeType === "room" && currentRoom) {
+          document
+            .querySelector(`[onclick="joinRoom('${currentRoom}']`)
+            ?.classList.add("active");
+        } else if (activeType === "chat" && currentChat) {
+          document
+            .querySelector(`[onclick="openChat('${currentChat}']`)
+            ?.classList.add("active");
+        }
+      }
+
+      // Socket event listeners
+      socket.on("message", (message) => {
+        if (activeType === "room" && currentRoom === message.roomId) {
+          const messagesDiv = document.getElementById("messages");
+          messagesDiv.innerHTML += `
+                    <div class="message">
+                        <strong>${message.username}</strong>: ${message.content}
+                        <small>(${new Date(
+                          message.timestamp
+                        ).toLocaleTimeString()})</small>
+                    </div>
+                `;
+          messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        }
+      });
+
+      socket.on("directMessage", ({ chatId, message }) => {
+        if (activeType === "chat" && currentChat === chatId) {
+          const messagesDiv = document.getElementById("messages");
+          messagesDiv.innerHTML += `
+                    <div class="message">
+                        <strong>${message.username}</strong>: ${message.content}
+                        <small>(${new Date(
+                          message.timestamp
+                        ).toLocaleTimeString()})</small>
+                    </div>
+                `;
+          messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        }
+        loadChats(); // Refresh chat list to show latest messages
+      });
+
+      socket.on("chatStarted", (chat) => {
+        loadChats();
+      });
+
+      socket.on("roomCreated", () => {
+        loadRooms();
+      });
+
+      // Handle message input with enter key
+      document
+        .getElementById("messageInput")
+        .addEventListener("keypress", (e) => {
+          if (e.key === "Enter") {
+            sendMessage();
+          }
+        });
+    </script>
+  </body>
+</html>
